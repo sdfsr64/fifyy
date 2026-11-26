@@ -1,0 +1,56 @@
+name: RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - name: Enable RDP and create user
+        shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrEmpty($env:RDP_PASSWORD)) { throw "RDP_PASSWORD secret is missing or empty" }
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fSingleSessionPerUser" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+          $pol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+          New-Item -Path $pol -Force | Out-Null
+          Set-ItemProperty -Path $pol -Name MaxIdleTime -Value 0 -Type DWord
+          Set-ItemProperty -Path $pol -Name MaxDisconnectionTime -Value 0 -Type DWord
+          Set-ItemProperty -Path $pol -Name KeepAliveEnable -Value 1 -Type DWord
+          Set-ItemProperty -Path $pol -Name KeepAliveInterval -Value 1 -Type DWord
+          $pw = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+          if (-not (Get-LocalUser -Name "rdpuser" -ErrorAction SilentlyContinue)) {
+            New-LocalUser -Name "rdpuser" -Password $pw -PasswordNeverExpires | Out-Null
+          } else {
+            Set-LocalUser -Name "rdpuser" -Password $pw
+          }
+          Add-LocalGroupMember -Group "Administrators" -Member "rdpuser" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpuser" -ErrorAction SilentlyContinue
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          hostname: github-rdp
+          timeout: 5m
+
+      - name: Show Tailscale IP
+        shell: pwsh
+        run: |
+          $ts = "C:\Program Files\Tailscale\tailscale.exe"
+          if (-not (Test-Path $ts)) { $ts = "tailscale" }
+          $ip = & $ts ip -4
+          if (-not $ip) { throw "Tailscale is not logged in. Check TAILSCALE_AUTHKEY." }
+          Write-Host "Tailscale IP: $ip"
+
+      - name: Keep session alive
+        shell: pwsh
+        run: |
+          Write-Host "RDP ready. User: rdpuser"
+          Start-Sleep -Seconds 21000
